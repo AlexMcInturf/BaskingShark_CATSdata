@@ -1,0 +1,372 @@
+---
+title: "CATS_basker_analysis"
+output: html_document
+---
+
+Here I'm going to bring in the initial raw dataset from CATSCam
+```{r}
+library(rmarkdown)
+library(ggplot2)
+setwd("~/Desktop/Basking sharks/bs.git")
+ID <- 3 #this allows us to change the ID to look at other data if we want to 
+data <- read.csv(paste0("Shark ", ID, "_CATS.csv"))
+head(data)
+table(data$Date) #all have the same date (July 26, 2013)
+data$Time[1] #first time: 19:16:45
+data$Time[nrow(data)] #end time: 22:10:47
+```
+**SUMMARY STATS** we need to think about what we are interested in. We want to know time, behavior, feeding, and the different axes from the accelerometer
+
+```{r}
+dat2 <- data[,c(2,4, 5, 12, 14, 16, 27)]
+colnames(dat2) <- c("Time", "Behavior", "Feeding", "Sway", "Surge", "Heave", "ODBA")
+head(dat2)
+#convert time to POSIXct
+dat2[,1] <- as.POSIXct(dat2$Time, format="%H:%M:%OS", tz="UTC")
+head(dat2)
+
+################# confirm that videos line up with the CATS data I was given ####
+range(dat2$Time) #time runs from 2018-07-27 19:47:05 to 2018-07-27 23:25:32
+# CATS data is in 5 minute videos. If we want to compare, how many videos would we have? 
+### question for Emmett/heather: did the camera start recording once the cam hit the water, or once it was activated? Need to align. 
+duration <- dat2[nrow(dat2),]
+totalvid<-duration$Time - dat2$Time[1] # time difference of 3.640833 hours (how many 5 min videos does this make)
+(as.numeric(totalvid)*60)/5 #gives us total minutes/5 minute intervals
+# so, the data given to me has been appropriately trimmed to start when the camera hit the water (thanks Heather!)
+
+```
+
+
+Let's look at frequency distribution of feeding events. To do this, we will first need to figure out how to define a single "feeding event". We can think of this in terms of the minimum time difference that needs to happen in order for feeding behavior to be considered another "feeding event" (so, 20 seconds? 30 seconds?). Anything less than that would be considered the same feeding event. Then, we need to go through each segment and figure out how long these segments are (subtract time that the event began from the time that it ended). 
+```{r}
+feed.dat <- dat2[dat2$Feeding==1,]
+summary(feed.dat)
+# need to bin by duration of feeding event, which requires defining feeding events
+feed.dat$Time
+length(feed.dat$Time)
+# should define feeding events by any difference in time between events > 00:20 (aka they stop feeding for 20 seconds; otherwise considered the same feeding event)
+interv <- feed.dat$Time[-1]-feed.dat$Time[-length(feed.dat$Time)]
+table(interv)
+splits <- which(interv > 30) #this gives us the locations of where the difference is greater than 10
+length(splits)
+head(feed.dat)
+
+#### practice with one segment of feeding behavior: 
+
+feed.dat1 <- (feed.dat[0:splits[1],])
+ft1 <- feed.dat1[nrow(feed.dat1),1] - feed.dat1[1,1] #returns a difftime object and time difference that gives you the duration of the feeding event
+ft1 <- as.numeric(feed.dat1[nrow(feed.dat1),1] - feed.dat1[1,1]) #make numeric
+
+# ### now try with two segments, and combine in a list
+feed.dat2 <- (feed.dat[splits[1]:splits[2],])
+ ft2 <- as.numeric(feed.dat2[nrow(feed.dat2),1] - feed.dat2[1,1]) 
+# 
+# feed.dat3 <- (feed.dat[splits[2]:splits[3],])
+# ft3 <- as.numeric(feed.dat3[nrow(feed.dat3),1] - feed.dat3[1,1]) 
+# 
+# #create a vector with the ft values
+# vec <- c(ft1, ft2)
+# hist(vec)
+
+#### now, to combine all of these in a for loop in order to get a vector that contains the number of seconds per feeding bout (assuming the threshold for feeding/non-feeding is 10 seconds)
+
+ft <- c(ft1, rep(NA,length(splits)-1)) #did ft1 manually because it was easier
+
+for(i in 2:length(splits)){
+  temp <- feed.dat[splits[i-1]:splits[i],]
+  ft1 <- as.numeric(temp[nrow(temp),1] - temp[1,1])
+  ft[i] <- ft1
+}
+
+breaks <- seq(from=1, to=100, 5)
+hist(ft, breaks=breaks, main = "Histogram of Feeding Events", xlab = "Duration of Event (s)")
+
+### want to go back to this with the more detailed feeding event data
+
+
+```
+**ACCELEROMETER INFO** Now we want to go back to the original data set, and pull out the time, whether it was a feeding event, then the acceleration in each axis 
+
+```{r}
+# First, cleaning up the data:
+# note: all of our accelerations are in g. 1 g = 9.80665 m/s^2, so we need to convert all of our axes. Current literature has used both g and m/s^2, so we just want both
+dat2$Sway.ms2 <- dat2$Sway*9.80665
+dat2$Surge.ms2<- dat2$Surge*9.80665
+dat2$Heave.ms2 <- dat2$Heave*9.80665
+acc <- dat2
+head(acc)
+summary(acc)
+acc[,1] <- as.POSIXct(acc$Time, format="%H:%M:%OS", tz="UTC")
+summary(acc$Time)
+
+
+#Making sure that our "feeding" and "nonfeeding" binary events line up. 
+# if the behavior is feed or right turn while feeding or left turn while feeding, the column "Feeding" is assigned a 1; otherwise, it's a 0
+acc$Feeding <- ifelse(acc$Behavior == "Feed"|acc$Behavior == "Rturn_feed"|acc$Behavior == "Lturn_feed", 1, 0)
+
+# we have VERY high frequency. Probably can subsample, by removing duplicated timestamps (because we took off the milliseconds and such, so now we only have seconds)
+acc_sub <- acc[!duplicated(acc[,1]),]
+head(acc_sub)
+summary(acc_sub)
+nrow(acc_sub)
+plot(acc_sub$Time[1:500], acc_sub$Feeding[1:500])
+# this represents seconds 1 - 500
+##### we can also look at the behavior column, which has more detailed information ###
+plot(acc_sub$Time[1:500], acc_sub$Behavior[1:500])
+
+
+#### now that we have narrowed down a sample feeding event from the plot above ###
+#practice visualizing acceleration data overall
+library(ggplot2)
+ggplot(data=acc_sub, aes(x=Time, y=Surge)) + geom_line() + geom_line(aes(x=Time, y=Sway, color="red")) + geom_line(aes(x=Time, y=Heave, color="blue"))
+
+#Brownscombe et al., 2013: oscillations in the sway axis are good proxy for TB frequency
+### let's identify the first feeding event: 
+which(acc_sub$Feeding==1)
+summary(acc_sub[99:108,]) # 9 seconds
+feedsamp1 <- acc_sub[99:108,]
+#### this event was from 2018-07-30 19:48:43 to 2018-07-30 19:48:52
+ggplot(data=feedsamp1, aes(x=Time, y=Sway)) + geom_line()
+## now in m/s^2 vs g
+ggplot(data=feedsamp1, aes(x=Time, y=Sway.ms2)) + geom_line()
+
+#### compare it to a non-feeding event of the same duration:
+which(acc_sub$Feeding==0 & acc_sub$Behavior=="Swim") # just want normal swimming
+nofeedsamp1<- acc_sub[1:8,]
+summary(nofeedsamp1) 
+ggplot(data=nofeedsamp1, aes(x=Time, y=Sway)) + geom_line()
+
+
+######## Next step: compare several feeding events to see if they're similar in terms of signature #########
+which(acc_sub$Feeding==1)
+summary(acc_sub[113:125,])
+feedsamp2 <- acc_sub[113:125,]
+feedsamp3 <- acc_sub[134:179,]
+nofeedsamp2 <- acc_sub[55:59,]
+## now in m/s^2 vs g
+ggplot(data=feedsamp1, aes(x=Time, y=Sway)) + geom_line() + geom_line(data=feedsamp2, aes(x=Time, y=Sway)) + geom_line(data=feedsamp3, aes(x=Time, y=Sway)) + geom_line(data=nofeedsamp1, aes(x=Time, y=Sway), color="red") + geom_line(data=nofeedsamp2, aes(x=Time, y=Sway), color="red")
+
+##something weird is happening in 19:49:45-19:50:00....
+
+#################################################################################
+### let's go back to the full data, not the subsampled, 1 Hz data ####
+which(acc$Feeding==0 & acc$Behavior=="Swim") # just want normal swimming
+nofeedsamp1<- acc[1:141,]
+nofeedsamp2<- acc[701:759,]
+which(acc$Feeding==1)
+feedsamp1 <- acc[1961:2160,]
+feedsamp2 <- acc_sub[2241:2500,]
+feedsamp3 <- acc_sub[2661:3200,]
+
+ggplot(data=feedsamp1, aes(x=Time, y=Sway)) + geom_line()
+## now in m/s^2 vs g
+ggplot(data=feedsamp2, aes(x=Time, y=Sway.ms2)) + geom_line()
+
+ggplot(data=feedsamp1, aes(x=Time, y=Sway)) + geom_line() + geom_line(data=feedsamp2, aes(x=Time, y=Sway)) + geom_line(data=feedsamp3, aes(x=Time, y=Sway)) + geom_line(data=nofeedsamp1, aes(x=Time, y=Sway), color="red") + geom_line(data=nofeedsamp2, aes(x=Time, y=Sway), color="red")
+
+###### no discernible difference in either case, at least to the eye. Let's look at the summary stats of "sway" in our "feeding" vs. "nonfeeding" samples ####
+
+which(acc$Behavior=="Feed")
+feedsamp <- acc[1961:2160,]
+which(acc$Behavior=="Swim")
+nofeedsamp <- acc[1:141,]
+plot(feedsamp$Time, feedsamp$Sway, type="l")
+barplot(c(max(feedsamp$Sway), max(nofeedsamp$Sway)), col = c("lightblue", "pink"))
+barplot(c(mean(feedsamp$Sway), mean(nofeedsamp$Sway)), col = c("lightblue", "pink")) # we do see lower g values for SWIM vs. FEED behaviors, in terms of mean and max
+barplot(c(range(feedsamp$Sway), range(nofeedsamp$Sway)), col = c("lightblue", "pink"))
+#### note that the absolute difference between min and max values for both feeding and non-feeding are similar, BUT lower g values for non feeding
+
+```
+Let's look at the "before" period and "after" period for the feeding event:
+```{r}
+# if:
+feedsamp <- acc[1961:2160,]
+sampleseg1 <- acc[1000:1961,]
+sampleseg2 <- acc[2160:2300,]
+ggplot(data = feedsamp, aes(x=Time, y=Sway)) + geom_line() + geom_line(data=sampleseg1, aes(x=Time, y=Sway), color="red") + geom_line(data=sampleseg2, aes(x=Time, y=Sway), color="red")
+```
+
+Trying to play with signal processing. Note that for this signal, we want to run a high pass filter, because we WANT all of those tiny details and to get rid of the static acceleration. Filters work by computing the output from a number of input samples. 
+The number of samples is the memory length of the filter (Mark Johnson, St. Andrews). FIR (with finite memory) are better for processing movement data, rather than IIR (eg Butterworth, infinite memory, better for processing sound). We can use a Moving Average (MA) to make a high pass filter, where the memory is n-1 samples and the output is the mean of the last n samples. OR we can use a filter that is delay free and based on window functions. These have longer memories. 
+
+
+```{r}
+library(stats)
+sway <- data.frame(acc_sub$Sway, acc_sub$Time)
+colnames(sway) <- c("Sway", "Time")
+summary(sway)
+str(sway)
+plot(sway$Sway~sway$Time,type="l")
+
+# we are looking just at the signature for sway. I ultimately want a high pass filter to try to get rid of any static acceleration 
+
+## playing with high pass filters using the "filter" function
+# fir1(n, w, type = c("low", "high", "stop", "pass", "DC-0", "DC-1"),
+# window = hamming(n + 1), scale = TRUE) 
+# n = order of filter, degree of polynomial that will be used to smooth data; w = band edges between 0-1 (cut off point for filter), type = type of filter
+
+# generating MA coefficients for the filter I want to use 
+flt <- fir1(10, .9, type="high") # n must be even for high pass filters
+# note: you can play around with the order of the polynomial to get an even smoother track
+
+# now applying the filter:
+filtering <- filter(flt, sway$Sway)
+plot(filtering[1:100]~sway$Time[1:100], type ="l")
+lines(sway$Sway[1:100]~sway$Time[1:100], col="red")
+
+### Can also apply the filter using a fast fourier transform, which breaks down the signal into different harmonics ### 
+fftfilt(b, x, n = NULL) # b= moving average coefficients (from flt), x= signal to be filtered, n = length of FFT window 
+fourier <- fftfilt(flt, sway$Sway)
+plot(sway$Time, sway$Sway, type = "l")
+lines(sway$Time, fourier, col = "red")
+
+# let's compare the two filtering methods (fft and filter)
+plot(sway$Time, sway$Sway, type = "l")
+plot(sway$Time, fourier, type= "l", col = "red")
+lines(filtering~sway$Time, col="blue")
+## COOL! They're basically the same ## 
+
+# now, for fun, let's try a low pass filter # 
+# generating MA coefficients for the filter I want to use 
+flt.low <- fir1(8, .3, type="low")
+filtering.low <- filter(flt.low, sway$Sway)
+plot(filtering.low[1:100]~sway$Time[1:100], type ="l")
+lines(sway$Sway[1:100]~sway$Time[1:100], col="red")
+# we can see that this "smooths" the track and gets rid of all of that noise. BUT you can also see that there's a bit of a delay because of the nature of the MA coefficients # 
+# delay = (n-1)/2 or half of memory time #
+
+```
+Now that we have code for a subsampled dataset, let's go back to the full data set, sampled at 20 Hz, to make sure that we get all of the nuances of the signature to compare different behaviors
+
+```{r}
+head(acc)
+fullsway <- data.frame(acc$Sway, acc$Time)
+colnames(fullsway) <- c("Sway", "Time")
+summary(fullsway)
+str(fullsway)
+plot(fullsway$Sway~fullsway$Time,type="l") # this plot contains all of the noise in the data
+
+#reminder of our filtering MA coefficients
+flt <- fir1(10, .9, type="high") 
+# now applying the filter:
+fullfiltering <- filter(flt, fullsway$Sway)
+plot(fullfiltering[1:10000]~fullsway$Time[1:10000], type ="l")
+lines(fullsway$Sway[1:10000]~fullsway$Time[1:10000], col="red")
+
+
+#### let's look at the low pass filter as well for the entire 20Hz sampled data
+flt.low <- fir1(8, .3, type="low")
+fullfiltering.low <- filter(flt.low, fullsway$Sway)
+plot(fullfiltering.low[1:10000]~fullsway$Time[1:10000], type ="l")
+lines(fullsway$Sway[1:10000]~fullsway$Time[1:10000], col="red")
+
+#### this confirms to me that we will see the biggest behavioral differences using a high pass filter
+```
+
+
+Thanks to all of that playing, we now have "filtering", which contains all of our signal after high pass filtering, and "filtering.low", after low pass filtering. The next step is to identify behaviors from the video - one really prominent feeding event and one prominent non-feeding event, and see if we can see differences in the signature of EITHER low or high pass filtered signals, just to see where the TB frequency signal is strongest 
+
+```{r}
+# going back to the feedsamp and non-feed samples that we have above
+feedsamp <- acc[1961:2160,]
+nofeedsamp <- acc[1:141,]
+##### high pass ####
+hiflt <- fir1(8, .9, type="high") 
+# now applying the filter:
+hiflt.feed <- filter(hiflt, feedsamp$Sway)
+plot(hiflt.feed~feedsamp$Time, type ="l")
+plot(feedsamp$Sway~feedsamp$Time, col="red", type="l")
+
+hiflt.nofeed <- filter(hiflt, nofeedsamp$Sway)
+plot(hiflt.nofeed~nofeedsamp$Time, type ="l")
+plot(nofeedsamp$Sway~nofeedsamp$Time, col="red", type="l")
+
+##### low pass ####
+flt.low <- fir1(8, .3, type="low")
+lowflt.feed <- filter(flt.low, feedsamp$Sway)
+plot(lowflt.feed~feedsamp$Time, type ="l")
+
+### just for fun, playing with power spectrum densities ###
+# would want to apply these to the different behaviors and see if they're different 
+install.packages("psd")
+library(psd)
+psd_feed <- pspectrum(feedsamp$Sway, x.frqsamp =20, plot=TRUE)
+psd_nofeed <- pspectrum(nofeedsamp$Sway, x.frqsamp =20, plot=TRUE)
+summary(psd_feed)
+plot(psd_feed$freq, psd_feed$spec, type="l")
+lines(psd_nofeed$freq, psd_nofeed$spec, col="red")
+
+```
+What about ODBA?
+```{r}
+plot(acc$ODBA~acc$Time, type="l")
+plot(feedsamp$ODBA~feedsamp$Time, type="l")
+summary(feedsamp$ODBA)
+plot(nofeedsamp$ODBA~nofeedsamp$Time, type="l")
+barplot(c(mean(feedsamp$ODBA), mean(nofeedsamp$ODBA))) #ODBA ISN'T VERY HELPFUL
+```
+**BEHAVIORS** Let's put it all together to compare different behaviors at a more nuanced scale. The behaviors we have are as follows: Feed, Lturn, Rturn, Rturn_feed, Swallow, Swim
+
+```{r}
+### The behaviors we have:
+summary(acc$Behavior)
+acc$ODBA <- abs(acc$ODBA)
+## feeding sample as defined above
+feedsamp
+
+## Lturn
+which(acc$Behavior=="Lturn")
+lturnsamp <- acc[261:500,]
+
+#Rturn
+which(acc$Behavior=="Rturn")
+rturnsamp <- acc[142:260,]
+
+#Rturn_feed
+which(acc$Behavior=="Rturn_feed")
+rturn_feedsamp <- acc[1181:1660,]
+
+#Swallow
+which(acc$Behavior=="Swallow")
+swallowsamp <- acc[1881:1960,]
+
+#Swim (same as the "nofeedsamp" object above, but renamed here for convenience)
+which(acc$Behavior=="Swim")
+swimsamp <- acc[1:141,]
+
+#### look at summary stats for each behavior ######
+names = c("Feed", "Swim", "Rturn", "Lturn", "Swallow", "Rturn_Feed")
+
+### mean sway values (g) - these have not been filtered in any way
+barplot(c(mean(feedsamp$Sway), mean(swimsamp$Sway), mean(rturnsamp$Sway), mean(lturnsamp$Sway), mean(swallowsamp$Sway), mean(rturn_feedsamp$Sway)), names.arg=names, main="Mean Sway Values")
+
+barplot(c(mean(feedsamp$ODBA), mean(swimsamp$ODBA), mean(rturnsamp$ODBA), mean(lturnsamp$ODBA), mean(swallowsamp$ODBA), mean(rturn_feedsamp$ODBA)), names.arg=names, main = "ODBA Values per Behavior")
+
+#### plotting "Sway" signatures for each behavior (note that these are NOT of the same duration, so x axis will be different...not super helpful)
+plot(feedsamp$Time, feedsamp$Sway, type="l")
+plot(swimsamp$Time, swimsamp$Sway, type="l")
+plot(swallowsamp$Time, swallowsamp$Sway, type="l")
+plot(rturn_feedsamp$Time, rturn_feedsamp$Sway, type="l")
+plot(rturnsamp$Time, rturnsamp$Sway, type="l")
+plot(lturnsamp$Time, lturnsamp$Sway, type="l")
+
+### back to playing with PSD! ####
+psd_feed <- pspectrum(feedsamp$Sway, x.frqsamp =20, plot=TRUE)
+psd_swim <- pspectrum(swimsamp$Sway, x.frqsamp =20, plot=TRUE)
+psd_swallow <- pspectrum(swallowsamp$Sway, x.frqsamp =20, plot=TRUE)
+psd_rturn_feed <- pspectrum(rturn_feedsamp$Sway, x.frqsamp =20, plot=TRUE)
+psd_rturn <- pspectrum(rturnsamp$Sway, x.frqsamp =20, plot=TRUE)
+psd_lturn <- pspectrum(lturnsamp$Sway, x.frqsamp =20, plot=TRUE)
+
+plot(psd_rturn_feed$freq, psd_rturn_feed$spec, col="black", type="l")
+lines(psd_lturn$freq, psd_lturn$spec, col="green")
+lines(psd_feed$freq, psd_feed$spec, col="orange")
+lines(psd_swim$freq, psd_swim$spec, col="red")
+lines(psd_swallow$freq, psd_swallow$spec, col="blue")
+lines(psd_rturn$freq, psd_rturn$spec, col="gray")
+lines(psd_lturn$freq, psd_lturn$spec, col="purple")
+legend(5, .008, legend=c("Rturn_feed", "Lturn", "Feed", "Swim", "Swallow", "Rturn", "Lturn"),
+       col=c("black", "green", "orange", "red", "blue", "gray", "purple"), lty=1, cex=0.8)
+```
+
+Now that we have the basic code to apply. Next step: gathering more samples of each behavior. The above code only provides analyses we can apply if we extract a sample of each behavior. We will have to standardize these behaviors to get power per unit of time. 
